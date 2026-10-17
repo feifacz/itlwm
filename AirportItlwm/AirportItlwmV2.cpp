@@ -246,14 +246,17 @@ initCCLogs()
     driverFaultStream = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
     CCDataStream *dataStream = OSDynamicCast(CCDataStream, driverFaultStream);
     if (!dataStream || !_fWorkloop) {
+        IOLog("AirportItlwm: initCCLogs - dataStream=%p, _fWorkloop=%p\n", dataStream, _fWorkloop);
         return false;
     }
     driverCoreFaultReporter = CCFaultReporter::withStreamWorkloop(dataStream, _fWorkloop);
     if (!driverCoreFaultReporter) {
+        IOLog("AirportItlwm: initCCLogs - driverCoreFaultReporter is null\n");
         return false;
     }
     driverFaultReporter = IO80211FaultReporter::allocWithParams(driverCoreFaultReporter);
     if (!OSDynamicCast(CommonFaultReporter, driverFaultReporter)) {
+        IOLog("AirportItlwm: initCCLogs - driverFaultReporter cast fail\n");
         return false;
     }
 #else
@@ -278,11 +281,11 @@ bool AirportItlwm::start(IOService *provider)
     setProperty("DriverKitDriver", kOSBooleanFalse);
 #ifdef AIRPORT_WCL
     if (!initCCLogs()) {
-        releaseAll();
-        return false;
+        IOLog("AirportItlwm: initCCLogs did not fully succeed, continuing startup...\n");
     }
 #endif
     if (!super::start(provider)) {
+        IOLog("AirportItlwm: super::start failed!\n");
 #ifdef AIRPORT_WCL
         releaseAll();
 #endif

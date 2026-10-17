@@ -24,6 +24,7 @@
 #define types_h
 
 #include <IOKit/IOTypes.h>
+#include <IOKit/IOLib.h>
 #include <libkern/OSAtomic.h>
 #include <linux/bitfield.h>
 
@@ -114,6 +115,7 @@
 do\
 {\
 kprintf("%s: " fmt, "itlwm", ##x);\
+IOLog("%s: " fmt, "itlwm", ##x);\
 }while(0)
 
 typedef UInt8  u8;
