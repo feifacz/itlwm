@@ -268,9 +268,24 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
+#define SET_STAGE(msg) do { \
+    if (provider) provider->setProperty("ItlwmStage", msg); \
+    if (pciNub) pciNub->setProperty("ItlwmStage", msg); \
+    IOLog("AirportItlwm: Stage -> %s\n", msg); \
+} while(0)
+
+#define FAIL_STAGE(msg) do { \
+    if (provider) provider->setProperty("ItlwmFail", msg); \
+    if (pciNub) pciNub->setProperty("ItlwmFail", msg); \
+    IOLog("AirportItlwm: FAILED at %s\n", msg); \
+} while(0)
+
+    SET_STAGE("01_start_begin");
 #if __IO80211_TARGET == __MAC_15_2
-    if (version_major != 24 || version_minor < 2)
+    if (version_major != 24 || version_minor < 2) {
+        FAIL_STAGE("version_check_failed");
         return false;
+    }
 #endif
     XYLog("%s\n", __PRETTY_FUNCTION__);
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
@@ -280,39 +295,44 @@ bool AirportItlwm::start(IOService *provider)
     setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
     setProperty("DriverKitDriver", kOSBooleanFalse);
 #ifdef AIRPORT_WCL
+    SET_STAGE("02_init_cclogs");
     if (!initCCLogs()) {
         IOLog("AirportItlwm: initCCLogs did not fully succeed, continuing startup...\n");
     }
 #endif
+    SET_STAGE("03_super_start");
     if (!super::start(provider)) {
-        IOLog("AirportItlwm: super::start failed!\n");
+        FAIL_STAGE("super_start_failed");
 #ifdef AIRPORT_WCL
         releaseAll();
 #endif
         return false;
     }
+    SET_STAGE("04_pci_config");
     pciNub->setBusMasterEnable(true);
     pciNub->setIOEnable(true);
     pciNub->setMemoryEnable(true);
     pciNub->configWrite8(0x41, 0);
     if (pciNub->requestPowerDomainState(kIOPMPowerOn,
                                         (IOPowerConnection *) getParentEntry(gIOPowerPlane), IOPMLowestState) != IOPMNoErr) {
+        FAIL_STAGE("requestPowerDomainState_failed");
         super::stop(provider);
         return false;
     }
     if (initPCIPowerManagment(pciNub) == false) {
+        FAIL_STAGE("initPCIPowerManagment_failed");
         super::stop(pciNub);
         return false;
     }
     if (_fWorkloop == NULL) {
-        XYLog("No _fWorkloop!!\n");
+        FAIL_STAGE("no_workloop");
         super::stop(pciNub);
         releaseAll();
         return false;
     }
     _fCommandGate = IOCommandGate::commandGate(this, (IOCommandGate::Action)AirportItlwm::tsleepHandler);
     if (_fCommandGate == 0) {
-        XYLog("No command gate!!\n");
+        FAIL_STAGE("no_command_gate");
         super::stop(pciNub);
         releaseAll();
         return false;
@@ -321,7 +341,7 @@ bool AirportItlwm::start(IOService *provider)
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
         !setCurrentMedium(primaryMedium) || !setSelectedMedium(primaryMedium)) {
-        XYLog("setup medium fail\n");
+        FAIL_STAGE("setup_medium_fail");
         releaseAll();
         return false;
     }
@@ -339,15 +359,17 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_HEON;
 #endif
 
+    SET_STAGE("05_hal_attach");
     if (!fHalService->attach(pciNub)) {
-        XYLog("attach fail\n");
+        FAIL_STAGE("hal_attach_fail");
         super::stop(pciNub);
         releaseAll();
         return false;
     }
+    SET_STAGE("06_watchdog_init");
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
-        XYLog("init watchdog workloop fail\n");
+        FAIL_STAGE("watchdog_workloop_fail");
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -355,7 +377,7 @@ bool AirportItlwm::start(IOService *provider)
     }
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
     if (!watchdogTimer) {
-        XYLog("init watchdog fail\n");
+        FAIL_STAGE("watchdog_timer_fail");
         fHalService->detach(pciNub);
         super::stop(pciNub);
         releaseAll();
@@ -365,6 +387,7 @@ bool AirportItlwm::start(IOService *provider)
     scanSource = IOTimerEventSource::timerEventSource(this, &fakeScanDone);
 #ifdef AIRPORT_WCL
     if (!scanSource || _fWorkloop->addEventSource(scanSource) != kIOReturnSuccess) {
+        FAIL_STAGE("add_scan_source_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -374,13 +397,14 @@ bool AirportItlwm::start(IOService *provider)
 #endif
     scanSource->enable();
 
+    SET_STAGE("07_skywalk_init");
     fNetIf = new AirportItlwmSkywalkInterface;
 #ifdef AIRPORT_WCL
     if (!fNetIf || !static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->init(this)) {
 #else
     if (!fNetIf->init(this)) {
 #endif
-        XYLog("Skywalk interface init fail\n");
+        FAIL_STAGE("skywalk_init_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -390,20 +414,21 @@ bool AirportItlwm::start(IOService *provider)
 
 #ifndef AIRPORT_WCL
     if (!initCCLogs()) {
-        XYLog("CCLog init fail\n");
+        FAIL_STAGE("cclogs_fail_non_wcl");
         super::stop(provider);
         releaseAll();
         return false;
     }
 #endif
+    SET_STAGE("08_interface_attach");
     if (!fNetIf->attach(this)) {
-        XYLog("attach to service fail\n");
+        FAIL_STAGE("fNetIf_attach_fail");
         super::stop(provider);
         releaseAll();
         return false;
     }
     if (!attachInterface(fNetIf, this)) {
-        XYLog("attach to interface fail\n");
+        FAIL_STAGE("attachInterface_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -415,14 +440,14 @@ bool AirportItlwm::start(IOService *provider)
                                              true
 #endif
                                              )) {
-        XYLog("attach to IONetworkController interface fail\n");
+        FAIL_STAGE("attach_bsd_interface_fail");
         super::stop(provider);
         releaseAll();
         return false;
     }
     memset(&registInfo, 0, sizeof(registInfo));
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
-        XYLog("initRegistrationInfo fail\n");
+        FAIL_STAGE("initRegistrationInfo_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -431,6 +456,7 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->mExpansionData->fRegistrationInfo = (struct IOSkywalkNetworkInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkNetworkInterface::RegistrationInfo));
     fNetIf->mExpansionData2->fRegistrationInfo = (struct IOSkywalkEthernetInterface::RegistrationInfo *)IOMalloc(sizeof(struct IOSkywalkEthernetInterface::RegistrationInfo));
     if (!fNetIf->mExpansionData->fRegistrationInfo || !fNetIf->mExpansionData2->fRegistrationInfo) {
+        FAIL_STAGE("registration_info_malloc_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -439,7 +465,9 @@ bool AirportItlwm::start(IOService *provider)
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
     if (fNetIf->getInterfaceRole() == 1)
         fNetIf->deferBSDAttach(true);
+    SET_STAGE("09_skywalk_start");
     if (!fNetIf->start(this)) {
+        FAIL_STAGE("skywalk_start_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -447,7 +475,7 @@ bool AirportItlwm::start(IOService *provider)
 
 #else
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
-        XYLog("initRegistrationInfo fail\n");
+        FAIL_STAGE("initRegistrationInfo_fail");
         super::stop(provider);
         releaseAll();
         return false;
@@ -461,6 +489,7 @@ bool AirportItlwm::start(IOService *provider)
     fNetIf->start(this);
 
 #endif
+    SET_STAGE("10_register_service");
     setLinkStatus(kIONetworkLinkValid);
     if (TAILQ_EMPTY(&fHalService->get80211Controller()->ic_ess))
         fHalService->get80211Controller()->ic_flags |= IEEE80211_F_AUTO_JOIN;
@@ -468,6 +497,7 @@ bool AirportItlwm::start(IOService *provider)
     bsdInterface->registerService();
 #endif
     registerService();
+    SET_STAGE("11_started_success");
     return true;
 }
 

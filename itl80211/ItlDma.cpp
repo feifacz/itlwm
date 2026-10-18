@@ -31,17 +31,13 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
     owner = controller;
     owner->setProperty("IOPCIUseDeviceMapper", kOSBooleanTrue);
     if (!device->open(owner)) {
-        IOLog("AirportItlwm: DMA could not open PCI device\n");
-        return false;
+        IOLog("AirportItlwm: DMA could not open PCI device (non-fatal, continuing)\n");
+    } else {
+        opened = true;
     }
-    opened = true;
     mapper = IOMapper::copyMapperForDevice(device);
     const char *mode = "device";
     if (!mapper) {
-        if (device->getProperty("iommu-parent")) {
-            IOLog("AirportItlwm: DMA device mapper unavailable\n");
-            return false;
-        }
         IOMapper::checkForSystemMapper();
         mapper = IOMapper::gSystem;
         if (mapper)
@@ -76,6 +72,7 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
             segment.fIOVMAddr > UINT64_MAX - (BlockSize - 1) ||
             (bits < 64 && ((segment.fIOVMAddr + BlockSize - 1) >> bits))) {
             IOLog("AirportItlwm: DMA arena segment constraints failed at block %u\n", i);
+            device->setProperty("ItlwmDMAConstraintFail", i, 32);
             return false;
         }
         block.address = segment.fIOVMAddr;
@@ -85,10 +82,13 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
     }
 #if __IO80211_TARGET == __MAC_15_2
     owner->setProperty("ItlwmDMARevision", "sequoia-vtd-1");
+    device->setProperty("ItlwmDMARevision", "sequoia-vtd-1");
 #else
     owner->setProperty("ItlwmDMARevision", "tahoe-vtd-1");
+    device->setProperty("ItlwmDMARevision", "tahoe-vtd-1");
 #endif
     owner->setProperty("ItlwmDMAMapper", mode);
+    device->setProperty("ItlwmDMAMapper", mode);
     owner->setProperty("ItlwmDMAAddressBits", bits, 32);
     owner->setProperty("ItlwmDMAPoolBytes", BlockCount * BlockSize, 32);
     IOLog("AirportItlwm: DMA mapper=%s bits=%u pool=%u MiB\n", mode, bits, BlockCount);

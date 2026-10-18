@@ -148,15 +148,21 @@ bool ItlIwx::attach(IOPCIDevice *device)
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
 #ifdef AIRPORT_VTD
-    if (!prepareDma(device, 36))
-        return false;
-    pci.pa_dmat = dmaArena;
+    if (!prepareDma(device, 36)) {
+        IOLog("AirportItlwm: prepareDma failed or AppleVTD unavailable, attempting fallback\n");
+        device->setProperty("ItlwmDMAFallback", kOSBooleanTrue);
+    } else {
+        device->setProperty("ItlwmDMAFallback", kOSBooleanFalse);
+        pci.pa_dmat = dmaArena;
+    }
 #endif
     if (!iwx_attach(&com, &pci)) {
+        device->setProperty("ItlwmAttachFailed", kOSBooleanTrue);
         detach(device);
         releaseAll();
         return false;
     }
+    device->setProperty("ItlwmAttachSuccess", kOSBooleanTrue);
     return true;
 }
 
