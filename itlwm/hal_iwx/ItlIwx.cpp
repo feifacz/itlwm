@@ -2504,6 +2504,7 @@ iwx_alloc_rx_ring(struct iwx_softc *sc, struct iwx_rx_ring *ring)
     size = IWX_RX_MQ_RING_COUNT * (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210 ? sizeof(struct iwx_rx_transfer_desc) : sizeof(uint64_t));
     err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->free_desc_dma, size, 256);
     if (err) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmRxFail", "free_desc_dma");
         XYLog("%s: could not allocate RX ring DMA memory\n",
               DEVNAME(sc));
         goto fail;
@@ -2514,6 +2515,7 @@ iwx_alloc_rx_ring(struct iwx_softc *sc, struct iwx_rx_ring *ring)
     err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->stat_dma,
                                rb_stts_size, rb_stts_align);
     if (err) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmRxFail", "stat_dma");
         XYLog("%s: could not allocate RX status DMA memory\n",
               DEVNAME(sc));
         goto fail;
@@ -2524,6 +2526,7 @@ iwx_alloc_rx_ring(struct iwx_softc *sc, struct iwx_rx_ring *ring)
     err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->used_desc_dma,
                                size, 256);
     if (err) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmRxFail", "used_desc_dma");
         XYLog("%s: could not allocate RX ring DMA memory\n",
               DEVNAME(sc));
         goto fail;
@@ -2537,14 +2540,24 @@ iwx_alloc_rx_ring(struct iwx_softc *sc, struct iwx_rx_ring *ring)
                                 IWX_RBUF_SIZE, 0, BUS_DMA_NOWAIT,
                                 &data->map);
         if (err) {
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmRxFail", "dmamap_create");
+                sc->sc_pcitag->setProperty("ItlwmRxFailIdx", i, 32);
+            }
             XYLog("%s: could not create RX buf DMA map\n",
                   DEVNAME(sc));
             goto fail;
         }
         
         err = iwx_rx_addbuf(sc, IWX_RBUF_SIZE, i);
-        if (err)
+        if (err) {
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmRxFail", "rx_addbuf");
+                sc->sc_pcitag->setProperty("ItlwmRxFailIdx", i, 32);
+                sc->sc_pcitag->setProperty("ItlwmRxFailErr", err, 32);
+            }
             goto fail;
+        }
     }
     return 0;
     
@@ -2671,6 +2684,10 @@ iwx_alloc_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring, int qid)
     size = ring->ring_count * sizeof (struct iwx_tfh_tfd);
     err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->desc_dma, size, 256);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmTxFail", "desc_dma");
+            sc->sc_pcitag->setProperty("ItlwmTxFailQid", qid, 32);
+        }
         XYLog("%s: could not allocate TX ring DMA memory\n",
               DEVNAME(sc));
         goto fail;
@@ -2684,6 +2701,10 @@ iwx_alloc_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring, int qid)
         err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->bc_tbl,
                                    sizeof(struct iwx_agn_scd_bc_tbl), 0);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmTxFail", "bc_tbl");
+            sc->sc_pcitag->setProperty("ItlwmTxFailQid", qid, 32);
+        }
         XYLog("%s: could not allocate byte count table DMA memory\n",
               DEVNAME(sc));
         goto fail;
@@ -2693,6 +2714,10 @@ iwx_alloc_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring, int qid)
     err = iwx_dma_contig_alloc(sc->sc_dmat, &ring->cmd_dma, size,
                                IWX_FIRST_TB_SIZE_ALIGN);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmTxFail", "cmd_dma");
+            sc->sc_pcitag->setProperty("ItlwmTxFailQid", qid, 32);
+        }
         XYLog("%s: could not allocate cmd DMA memory\n", DEVNAME(sc));
         goto fail;
     }
@@ -2716,6 +2741,11 @@ iwx_alloc_tx_ring(struct iwx_softc *sc, struct iwx_tx_ring *ring, int qid)
                                 IWX_TFH_NUM_TBS - 2, mapsize, 0, BUS_DMA_NOWAIT,
                                 &data->map);
         if (err) {
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmTxFail", "dmamap_create");
+                sc->sc_pcitag->setProperty("ItlwmTxFailQid", qid, 32);
+                sc->sc_pcitag->setProperty("ItlwmTxFailIdx", i, 32);
+            }
             XYLog("%s: could not create TX buf DMA map\n",
                   DEVNAME(sc));
             goto fail;
@@ -13321,6 +13351,10 @@ iwx_preinit(struct iwx_softc *sc)
     
     err = iwx_prepare_card_hw(sc);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmPreinitFail", "prepare_card_hw");
+            sc->sc_pcitag->setProperty("ItlwmPreinitErr", err, 32);
+        }
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
@@ -13334,16 +13368,27 @@ iwx_preinit(struct iwx_softc *sc)
     
     err = iwx_start_hw(sc);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmPreinitFail", "start_hw");
+            sc->sc_pcitag->setProperty("ItlwmPreinitErr", err, 32);
+        }
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
     
     err = iwx_run_init_mvm_ucode(sc, 1);
-    if (generation != sc->sc_generation)
+    if (generation != sc->sc_generation) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmPreinitFail", "generation_mismatch");
         return ENXIO;
+    }
     iwx_stop_device(sc);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmPreinitFail", "run_init_mvm_ucode");
+            sc->sc_pcitag->setProperty("ItlwmPreinitErr", err, 32);
+        }
         return err;
+    }
     
     /* Print version info and MAC address on first successful fw load. */
     attached = 1;
@@ -13370,12 +13415,17 @@ iwx_preinit(struct iwx_softc *sc)
     
     /* Configure MAC address. */
     err = if_setlladdr(ifp, ic->ic_myaddr);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmPreinitFail", "setlladdr");
+            sc->sc_pcitag->setProperty("ItlwmPreinitErr", err, 32);
+        }
         XYLog("%s: could not set MAC address (error %d)\n",
                 DEVNAME(sc), err);
+    }
     
     ieee80211_media_init(ifp);
-    
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmPreinitSuccess", kOSBooleanTrue);
     return 0;
 }
 
@@ -13410,9 +13460,11 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     
     //    rw_init(&sc->ioctl_rwl, "iwxioctl");
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "01_pcie_cap");
     err = pci_get_capability(sc->sc_pct, sc->sc_pcitag,
                              PCI_CAP_PCIEXPRESS, &sc->sc_cap_off, NULL);
     if (err == 0) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "pcie_cap_not_found");
         XYLog("%s: PCIe capability structure not found!\n",
               DEVNAME(sc));
         return false;
@@ -13431,10 +13483,13 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     }
     pci_conf_write(sc->sc_pct, sc->sc_pcitag, PCI_COMMAND_STATUS_REG, reg);
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "02_map_mem");
     memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, PCI_MAPREG_START);
     err = pci_mapreg_map(pa, PCI_MAPREG_START, memtype, 0,
                          &sc->sc_st, &sc->sc_sh, NULL, &sc->sc_sz, 0);
     if (err) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "map_mem_space");
+        pa->pa_tag->setProperty("ItlwmIwxFailErr", err, 32);
         XYLog("%s: can't map mem space\n", DEVNAME(sc));
         return false;
     }
@@ -13442,6 +13497,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         sc->sc_msix = 1;
         XYLog("msix intr mode\n");
     } else if (pci_intr_map_msi(pa, &sc->ih)) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "map_msi_intr");
         XYLog("%s: can't map interrupt\n", DEVNAME(sc));
         return false;
     }
@@ -13456,6 +13512,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
             PCI_COMMAND_STATUS_REG, reg);
     }
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "03_find_msi");
     int msiIntrIndex = -1;
     for (int index = 0; ; index++)
     {
@@ -13470,10 +13527,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         }
     }
     if (msiIntrIndex == -1) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "msi_intr_index_not_found");
         XYLog("%s: can't find MSI interrupt controller\n", DEVNAME(sc));
         return false;
     }
 
+    pa->pa_tag->setProperty("ItlwmIwxStep", "04_filter_intr");
     if (sc->sc_msix)
         sc->sc_ih =
         IOFilterInterruptEventSource::filterInterruptEventSource(this,
@@ -13485,6 +13544,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
                                                                              (IOInterruptEventSource::Action)&ItlIwx::iwx_intr, &ItlIwx::intrFilter
                                                                              ,pa->pa_tag, msiIntrIndex);
     if (sc->sc_ih == NULL || pa->workloop->addEventSource(sc->sc_ih) != kIOReturnSuccess) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "add_event_source_failed");
         XYLog("%s: can't establish interrupt\n", DEVNAME(sc));
         return false;
     }
@@ -13509,9 +13569,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     uint16_t subsystem_device = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemID);
     uint16_t subsystem_vendor = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemVendorID);
     sc->sc_hw_id = (device << 16) + subsystem_device;
+    pa->pa_tag->setProperty("ItlwmIwxStep", "05_pci_match");
     pci_match(PCI_VENDOR_INTEL, device, subsystem_vendor, subsystem_device, iwx_devices,
               nitems(iwx_devices), (void **)&com.sc_cfg_params);
     if (!com.sc_cfg_params) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "pci_match_unknown_adapter");
+        pa->pa_tag->setProperty("ItlwmIwxHwId", sc->sc_hw_id, 32);
         XYLog("%s: Why??? unknown adapter type\n", DEVNAME(sc));
         return false;
     }
@@ -13585,6 +13648,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
             sc->sc_cfg = &iwl_ax1650i_cfg_quz_hr;
     }
     if (sc->sc_cfg == NULL) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "no_config_found");
+        pa->pa_tag->setProperty("ItlwmIwxHwId", sc->sc_hw_id, 32);
         XYLog("No config found for PCI dev %04x/%04x, rev=0x%x, rfid=0x%x\n",
               device, subsystem_device,
               sc->sc_hw_rev, sc->sc_hw_rf_id);
@@ -13602,6 +13667,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_tx_with_siso_diversity = sc->sc_cfg->tx_with_siso_diversity;
     sc->sc_uhb_supported = sc->sc_cfg->uhb_supported;
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "06_alloc_ctxt_dma");
     /* Allocate DMA memory for loading firmware. */
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         err = iwx_dma_contig_alloc(sc->sc_dmat, &sc->ctxt_info_dma,
@@ -13610,38 +13676,53 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         err = iwx_dma_contig_alloc(sc->sc_dmat, &sc->ctxt_info_dma,
                                    sizeof(struct iwx_context_info), 0);
     if (err) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "alloc_ctxt_info_dma");
+        pa->pa_tag->setProperty("ItlwmIwxFailErr", err, 32);
         XYLog("%s: could not allocate memory for loading firmware\n",
               DEVNAME(sc));
         return false;
     }
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "07_alloc_ict");
     /* Allocate interrupt cause table (ICT).*/
     err = iwx_dma_contig_alloc(sc->sc_dmat, &sc->ict_dma,
                                IWX_ICT_SIZE, 1<<IWX_ICT_PADDR_SHIFT);
     if (err) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "alloc_ict_dma");
+        pa->pa_tag->setProperty("ItlwmIwxFailErr", err, 32);
         XYLog("%s: could not allocate ICT table\n", DEVNAME(sc));
         goto fail0;
     }
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "08_alloc_tx");
     for (txq_i = 0; txq_i < nitems(sc->txq); txq_i++) {
         err = iwx_alloc_tx_ring(sc, &sc->txq[txq_i], txq_i);
         if (err) {
+            pa->pa_tag->setProperty("ItlwmIwxFail", "alloc_tx_ring");
+            pa->pa_tag->setProperty("ItlwmIwxFailQid", txq_i, 32);
+            pa->pa_tag->setProperty("ItlwmIwxFailErr", err, 32);
             XYLog("%s: could not allocate TX ring %d\n",
                   DEVNAME(sc), txq_i);
             goto fail4;
         }
     }
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "09_alloc_rx");
     err = iwx_alloc_rx_ring(sc, &sc->rxq);
     if (err) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "alloc_rx_ring");
+        pa->pa_tag->setProperty("ItlwmIwxFailErr", err, 32);
         XYLog("%s: could not allocate RX ring\n", DEVNAME(sc));
         goto fail4;
     }
     
+    pa->pa_tag->setProperty("ItlwmIwxStep", "10_taskq");
     taskq_init();
     sc->sc_nswq = taskq_create("iwxns", 1, IPL_NET, 0);
-    if (sc->sc_nswq == NULL)
+    if (sc->sc_nswq == NULL) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "taskq_create_failed");
         goto fail4;
+    }
     
     ic->ic_phytype = IEEE80211_T_OFDM;    /* not only, but not used */
     ic->ic_opmode = IEEE80211_M_STA;    /* default to BSS mode */
@@ -13735,10 +13816,12 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
+    pa->pa_tag->setProperty("ItlwmIwxStep", "11_preinit");
     if (iwx_preinit(sc)) {
+        pa->pa_tag->setProperty("ItlwmIwxFail", "preinit_failed");
         goto fail5;
     }
-    
+    pa->pa_tag->setProperty("ItlwmIwxStep", "12_attach_success");
     return true;
     
 fail5:

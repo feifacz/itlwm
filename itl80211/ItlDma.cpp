@@ -97,12 +97,22 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
 
 bool ItlDmaArena::allocate(uint32_t size, uint32_t alignment, ItlDmaBuffer &buffer)
 {
-    if (buffer.arena || !size || size > BlockSize)
+    if (buffer.arena || !size || size > BlockSize) {
+        if (device) {
+            device->setProperty("ItlwmDMAAllocFail", buffer.arena ? "already_allocated" : (!size ? "zero_size" : "oversize"));
+            device->setProperty("ItlwmDMAAllocReqSize", size, 32);
+        }
         return false;
+    }
     if (!alignment)
         alignment = 1;
-    if ((alignment & (alignment - 1)) || alignment > BlockSize)
+    if ((alignment & (alignment - 1)) || alignment > BlockSize) {
+        if (device) {
+            device->setProperty("ItlwmDMAAllocFail", "bad_alignment");
+            device->setProperty("ItlwmDMAAllocReqAlign", alignment, 32);
+        }
         return false;
+    }
     const uint32_t pages = (size + PageSize - 1) / PageSize;
     IOSimpleLockLock(lock);
     for (uint32_t b = 0; b < BlockCount; b++) {
@@ -138,6 +148,11 @@ bool ItlDmaArena::allocate(uint32_t size, uint32_t alignment, ItlDmaBuffer &buff
     uint32_t failure = ++failures;
     uint32_t used = usedPages;
     IOSimpleLockUnlock(lock);
+    if (device) {
+        device->setProperty("ItlwmDMAExhaustedFailures", failure, 32);
+        device->setProperty("ItlwmDMAExhaustedReqSize", size, 32);
+        device->setProperty("ItlwmDMAExhaustedUsedPages", used, 32);
+    }
     if (failure == 1 || !(failure & (failure - 1)))
         IOLog("AirportItlwm: DMA pool exhausted size=%u used=%u failures=%u\n", size, used * PageSize, failure);
     return false;
