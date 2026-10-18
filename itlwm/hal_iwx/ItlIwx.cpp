@@ -3086,19 +3086,34 @@ iwx_apm_init(struct iwx_softc *sc)
      * D0U* --> D0A* (powered-up active) state.
      */
     IWX_SETBITS(sc, IWX_CSR_GP_CNTRL, IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+    DELAY(50);
     
     /*
      * Wait for clock stabilization; once stabilized, access to
      * device-internal resources is supported, e.g. iwx_write_prph()
-     * and accesses to uCode SRAM.
+     * and accesses to uCode SRAM. Extended to 150ms for cold/slow PCIe clocks.
      */
     if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
-                      IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 25000)) {
-        XYLog("%s: timeout waiting for clock stabilization\n",
-              DEVNAME(sc));
-        err = ETIMEDOUT;
-        goto out;
+                      IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 150000)) {
+        /* Retry once after a short settle time */
+        IWX_SETBITS(sc, IWX_CSR_GP_CNTRL, IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+        DELAY(100);
+        if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
+                          IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
+                          IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 150000)) {
+            uint32_t gp = IWX_READ(sc, IWX_CSR_GP_CNTRL);
+            uint32_t hwif = IWX_READ(sc, IWX_CSR_HW_IF_CONFIG_REG);
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmApmFail", "clock_stabilization_timeout");
+                sc->sc_pcitag->setProperty("ItlwmGpCntrl", gp, 32);
+                sc->sc_pcitag->setProperty("ItlwmHwIfConfig", hwif, 32);
+            }
+            XYLog("%s: timeout waiting for clock stabilization (gp=0x%08x, hwif=0x%08x)\n",
+                  DEVNAME(sc), gp, hwif);
+            err = ETIMEDOUT;
+            goto out;
+        }
     }
 out:
     if (err)
@@ -3247,23 +3262,35 @@ iwx_start_hw(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     int err;
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "01_prepare_1");
     err = iwx_prepare_card_hw(sc);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmStartHwFail", "prepare_card_hw_1");
+            sc->sc_pcitag->setProperty("ItlwmStartHwErr", err, 32);
+        }
         return err;
+    }
     
     iwx_clear_persistence_bit(sc);
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "02_sw_reset");
     /* Reset the entire device */
     IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
-    DELAY(5000);
+    DELAY(25000);
     
     if (sc->sc_device_family == IWX_DEVICE_FAMILY_22000 && sc->sc_integrated) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "02b_integrated_22000");
         IWX_SETBITS(sc, IWX_CSR_GP_CNTRL,
                     IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
-        DELAY(20);
+        DELAY(50);
         if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                           IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
-                          IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 25000)) {
+                          IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 150000)) {
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmStartHwFail", "integrated_clock_timeout");
+                sc->sc_pcitag->setProperty("ItlwmGpCntrl", IWX_READ(sc, IWX_CSR_GP_CNTRL), 32);
+            }
             XYLog("%s: timeout waiting for clock stabilization\n",
                   DEVNAME(sc));
             return ETIMEDOUT;
@@ -3273,18 +3300,37 @@ iwx_start_hw(struct iwx_softc *sc)
         
         /* Reset the entire device */
         IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
-        DELAY(5000);
+        DELAY(25000);
     }
     
-    err = iwx_apm_init(sc);
-    if (err)
+    /* Ensure HW is ready again after SW_RESET before APM init */
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "03_prepare_card_hw_post_reset");
+    err = iwx_prepare_card_hw(sc);
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmStartHwFail", "prepare_card_hw_post_reset");
+            sc->sc_pcitag->setProperty("ItlwmStartHwErr", err, 32);
+        }
         return err;
+    }
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "04_apm_init");
+    err = iwx_apm_init(sc);
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmStartHwFail", "apm_init");
+            sc->sc_pcitag->setProperty("ItlwmStartHwErr", err, 32);
+        }
+        return err;
+    }
+    
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "05_msix_rfkill");
     iwx_init_msix_hw(sc);
     
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartHwStage", "06_success");
     return 0;
 }
 
