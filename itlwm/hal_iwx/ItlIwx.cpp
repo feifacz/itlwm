@@ -1141,6 +1141,9 @@ iwx_ctxt_info_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
     }
 #endif
     
+    if (sc->sc_pcitag)
+        sc->sc_pcitag->setBusMasterEnable(true);
+    
     iwx_enable_fwload_interrupt(sc);
     
     IWX_WRITE64(sc, IWX_CSR_CTXT_INFO_BA, sc->ctxt_info_dma.paddr);
@@ -4987,17 +4990,31 @@ iwx_load_firmware(struct iwx_softc *sc)
     sc->sc_uc.uc_intr = 0;
     sc->sc_uc.uc_ok = 0;
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmLoadFwStage", "01_ctxt_init");
     fws = &sc->sc_fw.fw_sects[IWX_UCODE_TYPE_REGULAR];
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         err = iwx_ctxt_info_gen3_init(sc, fws);
     else
         err = iwx_ctxt_info_init(sc, fws);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmLoadFwFail", "ctxt_info_init");
+            sc->sc_pcitag->setProperty("ItlwmLoadFwErr", err, 32);
+        }
         XYLog("%s: could not init context info\n", DEVNAME(sc));
         return err;
     }
     
-    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 1000);
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmLoadFwStage", "02_wait_alive");
+    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 3000);
+    if (err && !sc->sc_uc.uc_intr) {
+        uint32_t isr = IWX_READ(sc, IWX_CSR_INT);
+        if (isr & (IWX_CSR_INT_BIT_ALIVE | IWX_CSR_INT_BIT_FH_RX)) {
+            iwx_intr(this, nullptr, 0);
+            if (sc->sc_uc.uc_intr)
+                err = 0;
+        }
+    }
     if (err == ENXIO)
         return err;
     if (!err && !sc->sc_uc.uc_ok)
@@ -5006,17 +5023,29 @@ iwx_load_firmware(struct iwx_softc *sc)
 #ifdef AIRPORT_VTD
         sc->sc_dmat->deferRecycling();
 #endif
+        uint32_t cpu1 = 0, cpu2 = 0, umac_pc = 0, lmac_pc = 0;
         if (iwx_nic_lock(sc)) {
-            XYLog("SecBoot CPU1 Status: 0x%x, CPU2 Status: 0x%x\n",
-                  iwx_read_umac_prph(sc, IWX_UMAG_SB_CPU_1_STATUS),
-                  iwx_read_umac_prph(sc, IWX_UMAG_SB_CPU_2_STATUS));
-            XYLog("UMAC PC: 0x%x\n",
-                  iwx_read_umac_prph(sc,
-                                     IWX_UREG_UMAC_CURRENT_PC));
-            XYLog("LMAC PC: 0x%x\n",
-                  iwx_read_umac_prph(sc,
-                                     IWX_UREG_LMAC1_CURRENT_PC));
+            cpu1 = iwx_read_umac_prph(sc, IWX_UMAG_SB_CPU_1_STATUS);
+            cpu2 = iwx_read_umac_prph(sc, IWX_UMAG_SB_CPU_2_STATUS);
+            umac_pc = iwx_read_umac_prph(sc, IWX_UREG_UMAC_CURRENT_PC);
+            lmac_pc = iwx_read_umac_prph(sc, IWX_UREG_LMAC1_CURRENT_PC);
+            XYLog("SecBoot CPU1 Status: 0x%x, CPU2 Status: 0x%x\n", cpu1, cpu2);
+            XYLog("UMAC PC: 0x%x\n", umac_pc);
+            XYLog("LMAC PC: 0x%x\n", lmac_pc);
             iwx_nic_unlock(sc);
+        }
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmLoadFwFail", "wait_alive");
+            sc->sc_pcitag->setProperty("ItlwmLoadFwErr", err, 32);
+            sc->sc_pcitag->setProperty("ItlwmCpu1Status", cpu1, 32);
+            sc->sc_pcitag->setProperty("ItlwmCpu2Status", cpu2, 32);
+            sc->sc_pcitag->setProperty("ItlwmUmacPC", umac_pc, 32);
+            sc->sc_pcitag->setProperty("ItlwmLmacPC", lmac_pc, 32);
+            sc->sc_pcitag->setProperty("ItlwmCsrInt", IWX_READ(sc, IWX_CSR_INT), 32);
+            sc->sc_pcitag->setProperty("ItlwmCsrIntMask", IWX_READ(sc, IWX_CSR_INT_MASK), 32);
+            sc->sc_pcitag->setProperty("ItlwmFhIntStatus", IWX_READ(sc, IWX_CSR_FH_INT_STATUS), 32);
+            sc->sc_pcitag->setProperty("ItlwmUcIntr", sc->sc_uc.uc_intr, 32);
+            sc->sc_pcitag->setProperty("ItlwmUcOk", sc->sc_uc.uc_ok, 32);
         }
         iwx_ctxt_info_free_paging(sc);
         XYLog("%s: could not load firmware\n", DEVNAME(sc));
@@ -5029,6 +5058,7 @@ iwx_load_firmware(struct iwx_softc *sc)
     if (err)
         return err;
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmLoadFwStage", "03_success");
     XYLog("%s: load firmware ok\n", DEVNAME(sc));
     
     return err;
@@ -5041,8 +5071,13 @@ iwx_start_fw(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     int err;
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartFwStage", "01_prepare_card_hw");
     err = iwx_prepare_card_hw(sc);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmStartFwFail", "prepare_card_hw");
+            sc->sc_pcitag->setProperty("ItlwmStartFwErr", err, 32);
+        }
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
@@ -5061,12 +5096,18 @@ iwx_start_fw(struct iwx_softc *sc)
     /* clear (again), then enable firwmare load interrupt */
     IWX_WRITE(sc, IWX_CSR_INT, ~0);
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartFwStage", "02_nic_init");
     err = iwx_nic_init(sc);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmStartFwFail", "nic_init");
+            sc->sc_pcitag->setProperty("ItlwmStartFwErr", err, 32);
+        }
         XYLog("%s: unable to init nic\n", DEVNAME(sc));
         return err;
     }
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmStartFwStage", "03_load_firmware");
     return iwx_load_firmware(sc);
 }
 
@@ -5121,18 +5162,37 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     int err;
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmFwStage", "01_read_fw");
     err = iwx_read_firmware(sc);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmFwFail", "read_fw");
+            sc->sc_pcitag->setProperty("ItlwmFwErr", err, 32);
+        }
         return err;
+    }
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmFwStage", "02_start_fw");
     err = iwx_start_fw(sc);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmFwFail", "start_fw");
+            sc->sc_pcitag->setProperty("ItlwmFwErr", err, 32);
+        }
         return err;
+    }
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmFwStage", "03_load_pnvm");
     err = iwx_load_pnvm(sc);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmFwFail", "load_pnvm");
+            sc->sc_pcitag->setProperty("ItlwmFwErr", err, 32);
+        }
         return err;
+    }
     
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmFwStage", "04_post_alive");
     iwx_post_alive(sc);
     
     return 0;
@@ -5156,8 +5216,13 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
     }
 
     sc->sc_init_complete = 0;
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "01_load_ucode");
     err = iwx_load_ucode_wait_alive(sc);
     if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmMvmFail", "load_ucode");
+            sc->sc_pcitag->setProperty("ItlwmMvmErr", err, 32);
+        }
         XYLog("%s: failed to load init firmware\n", DEVNAME(sc));
         return err;
     }
@@ -5169,24 +5234,47 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
      * Send init config command to mark that we are sending NVM
      * access commands
      */
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "02_init_ext_cfg");
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_SYSTEM_GROUP,
                                            IWX_INIT_EXTENDED_CFG_CMD), IWX_CMD_SEND_IN_RFKILL, sizeof(init_cfg), &init_cfg);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmMvmFail", "init_ext_cfg");
+            sc->sc_pcitag->setProperty("ItlwmMvmErr", err, 32);
+        }
         return err;
+    }
 
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "03_nvm_access_complete");
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP,
                                            IWX_NVM_ACCESS_COMPLETE), IWX_CMD_SEND_IN_RFKILL, sizeof(nvm_complete), &nvm_complete);
-    if (err)
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmMvmFail", "nvm_access_complete");
+            sc->sc_pcitag->setProperty("ItlwmMvmErr", err, 32);
+        }
         return err;
+    }
 
     /* INIT_COMPLETE can arrive before NVM_ACCESS_COMPLETE is acknowledged. */
-    err = iwx_wait_notification(sc, &sc->sc_init_complete, wait_flags, 2000);
-    if (err)
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "04_wait_init_complete");
+    err = iwx_wait_notification(sc, &sc->sc_init_complete, wait_flags, 3000);
+    if (err) {
+        if (sc->sc_pcitag) {
+            sc->sc_pcitag->setProperty("ItlwmMvmFail", "wait_init_complete");
+            sc->sc_pcitag->setProperty("ItlwmMvmErr", err, 32);
+        }
         return err;
+    }
 
     if (readnvm) {
+        if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "05_nvm_get");
         err = iwx_nvm_get(sc);
         if (err) {
+            if (sc->sc_pcitag) {
+                sc->sc_pcitag->setProperty("ItlwmMvmFail", "nvm_get");
+                sc->sc_pcitag->setProperty("ItlwmMvmErr", err, 32);
+            }
             XYLog("%s: failed to read nvm\n", DEVNAME(sc));
             return err;
         }
@@ -5195,6 +5283,7 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
                 sc->sc_nvm.hw_addr);
         
     }
+    if (sc->sc_pcitag) sc->sc_pcitag->setProperty("ItlwmMvmStage", "06_success");
     return 0;
 }
 

@@ -52,7 +52,7 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
     for (uint32_t i = 0; i < BlockCount; i++) {
         auto &block = blocks[i];
         block.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
-            kIODirectionInOut | kIOMemoryHostPhysicallyContiguous | kIOMemoryMapperNone,
+            kIODirectionInOut | kIOMemoryHostPhysicallyContiguous | kIOMemoryMapperNone | kIOMapInhibitCache,
             BlockSize, mask);
         if (!block.memory)
             return false;
