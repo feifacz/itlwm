@@ -1292,6 +1292,10 @@ iwx_clear_persistence_bit(struct iwx_softc *sc)
 {
     uint32_t hpm, wprot;
     
+    /* Clear persistence mode in HW_IF_CONFIG register as well */
+    IWX_CLRBITS(sc, IWX_CSR_HW_IF_CONFIG_REG,
+                IWX_CSR_HW_IF_CONFIG_REG_PERSIST_MODE);
+    
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         return;
     
@@ -3037,12 +3041,11 @@ iwx_apm_config(struct iwx_softc *sc)
     lctl = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                          sc->sc_cap_off + PCI_PCIE_LCSR);
     /*
-     * Disable L0s and L1s in PCIE register because we don't support ASPM now.
+     * Do NOT modify PCI_PCIE_LCSR directly via pci_conf_write!
+     * In macOS, changing ASPM bits in PCI configuration space without
+     * coordinating with the upstream PCIe bridge (root complex) breaks link
+     * reference clock synchronization and triggers clock stabilization timeouts.
      */
-    lctl &= ~(PCI_PCIE_LCSR_ASPM_L0S | PCI_PCIE_LCSR_ASPM_L1);
-    pci_conf_write(sc->sc_pct, sc->sc_pcitag, sc->sc_cap_off + PCI_PCIE_LCSR, lctl);
-    lctl = pci_conf_read(sc->sc_pct, sc->sc_pcitag, sc->sc_cap_off + PCI_PCIE_LCSR);
-    
     cap = pci_conf_read(sc->sc_pct, sc->sc_pcitag,
                         sc->sc_cap_off + PCI_PCIE_DCSR2);
     sc->sc_ltr_enabled = (cap & PCI_PCIE_DCSR2_LTREN) ? 1 : 0;
@@ -3081,6 +3084,11 @@ iwx_apm_init(struct iwx_softc *sc)
     
     iwx_apm_config(sc);
     
+    if (sc->sc_cfg_params && sc->sc_cfg_params->bisr_workaround) {
+        /* ensure the TOP FSM isn't still in previous reset */
+        DELAY(5000);
+    }
+    
     /*
      * Set "initialization complete" bit to move adapter from
      * D0U* --> D0A* (powered-up active) state.
@@ -3096,24 +3104,36 @@ iwx_apm_init(struct iwx_softc *sc)
     if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
                       IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 150000)) {
-        /* Retry once after a short settle time */
-        IWX_SETBITS(sc, IWX_CSR_GP_CNTRL, IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+        /*
+         * If clock is not ready with INIT_DONE alone, also request MAC access
+         * (MAC_ACCESS_REQ) to force power to the MAC PLL/clock domain.
+         */
+        IWX_SETBITS(sc, IWX_CSR_GP_CNTRL,
+                    IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE |
+                    IWX_CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
         DELAY(100);
         if (!iwx_poll_bit(sc, IWX_CSR_GP_CNTRL,
                           IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY,
                           IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY, 150000)) {
             uint32_t gp = IWX_READ(sc, IWX_CSR_GP_CNTRL);
             uint32_t hwif = IWX_READ(sc, IWX_CSR_HW_IF_CONFIG_REG);
+            uint32_t rst = IWX_READ(sc, IWX_CSR_RESET);
             if (sc->sc_pcitag) {
                 sc->sc_pcitag->setProperty("ItlwmApmFail", "clock_stabilization_timeout");
                 sc->sc_pcitag->setProperty("ItlwmGpCntrl", gp, 32);
                 sc->sc_pcitag->setProperty("ItlwmHwIfConfig", hwif, 32);
+                sc->sc_pcitag->setProperty("ItlwmCsrReset", rst, 32);
             }
-            XYLog("%s: timeout waiting for clock stabilization (gp=0x%08x, hwif=0x%08x)\n",
-                  DEVNAME(sc), gp, hwif);
+            XYLog("%s: timeout waiting for clock stabilization (gp=0x%08x, hwif=0x%08x, rst=0x%08x)\n",
+                  DEVNAME(sc), gp, hwif, rst);
             err = ETIMEDOUT;
             goto out;
         }
+    }
+    
+    if (sc->sc_cfg_params && sc->sc_cfg_params->bisr_workaround) {
+        /* ensure BISR shift has finished */
+        DELAY(200);
     }
 out:
     if (err)
