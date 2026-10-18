@@ -55,12 +55,14 @@ jobs:
           suffix="v$version-$configuration-alpha-$short_sha"
           ditto -c -k --keepParent "$products/$PLATFORM/AirportItlwm.kext" "artifacts/AirportItlwm-$PLATFORM-$suffix.zip"
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: AirportItlwm-${{ matrix.platform }}-${{ matrix.configuration }}
           path: artifacts/AirportItlwm-${{ matrix.platform }}-*.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: build-logs-${{ matrix.platform }}-${{ matrix.configuration }}
           path: logs
@@ -68,7 +70,7 @@ jobs:
   prerelease:
     name: Publish development build
     needs: build
-    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: always() && !cancelled() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
